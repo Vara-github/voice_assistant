@@ -1,61 +1,83 @@
+import pvporcupine
+import pyaudio
+import numpy as np
 import speech_recognition as sr
 import pyttsx3
-import pywhatkit
-import datetime
-import wikipedia
+import time
 import pyjokes
 
-# Initialize recognizer and text-to-speech engine
-listener = sr.Recognizer()
+# Initialize the recognizer and the text-to-speech engine
+recognizer = sr.Recognizer()
 engine = pyttsx3.init()
-voices = engine.getProperty('voices')
-engine.setProperty('voice', voices[1].id)
 
-def talk(text):
-    engine.say(text)
-    engine.runAndWait()
+# Replace 'YOUR_ACCESS_KEY' with the access key you obtained from Picovoice Console
+access_key = "rPkAx6tjjeMwxt02GSSWdfER3o0lgKopxYVveryLJr8LelX9opOHTQ=="
 
-def take_command():
-    try:
-        with sr.Microphone() as source:
-            print('Listening...')
-            voice = listener.listen(source)
-            command = listener.recognize_google(voice)
-            command = command.lower()
-            if 'alexa' in command:
-                command = command.replace('alexa', '')
-                print(command)
-                return command
-    except sr.UnknownValueError:
-        print("Sorry, I didn't catch that. Please try again.")
-    except sr.RequestError as e:
-        print(f"Could not request results from Google Speech Recognition service; {e}")
-    return ""
+# Porcupine initialization for hotword detection
+porcupine = pvporcupine.create(access_key=access_key, keywords=["alexa"])
 
-def run_alexa():
-    command = take_command()
-    print(command)
-    if 'play' in command:
-        song = command.replace('play', '')
-        talk('playing ' + song)
-        pywhatkit.playonyt(song)
-    elif 'time' in command:
-        time = datetime.datetime.now().strftime('%I:%M %p')
-        talk('Current time is ' + time)
-    elif 'who the heck is' in command:
-        person = command.replace('who the heck is', '')
-        info = wikipedia.summary(person, 1)
-        print(info)
-        talk(info)
-    elif 'date' in command:
-        talk('sorry, I have a headache')
-    elif 'are you single' in command:
-        talk('I am in a relationship with wifi')
-    elif 'joke' in command:
-        talk(pyjokes.get_joke())
-    else:
-        talk('Please say the command again.')
+# Audio stream setup
+pa = pyaudio.PyAudio()
+audio_stream = pa.open(
+    rate=porcupine.sample_rate,
+    channels=1,
+    format=pyaudio.paInt16,
+    input=True,
+    frames_per_buffer=porcupine.frame_length
+)
 
-if __name__ == "__main__":
+print("Listening for wake word...")
+
+def get_response(command):
+    responses = {
+        "what is your name": "My name is Alexa.",
+        "how are you": "I am just a program, so I don't have feelings, but thanks for asking.",
+        "what time is it": time.strftime("It's %I:%M %p."),
+        "tell me a joke": pyjokes.get_joke(),
+        "exit": "Goodbye!"
+    }
+    return responses.get(command.lower(), "I didn't understand that.")
+
+try:
     while True:
-        run_alexa()
+        pcm = audio_stream.read(porcupine.frame_length)
+        pcm = np.frombuffer(pcm, dtype=np.int16)
+        
+        keyword_index = porcupine.process(pcm)
+        if keyword_index >= 0:
+            print("Wake word detected!")
+            
+            # Listen for a command
+            with sr.Microphone() as source:
+                print("Listening for command...")
+                audio = recognizer.listen(source)
+
+            # Recognize the command
+            try:
+                command = recognizer.recognize_google(audio)
+                print(f"You said: {command}")
+                
+                # Get the response for the command
+                response = get_response(command)
+                print(f"Response: {response}")
+
+                # Speak the response back to the user
+                engine.say(response)
+                engine.runAndWait()
+
+                # Exit the loop if the command is 'exit'
+                if command.lower() == "exit":
+                    break
+            except sr.RequestError:
+                print("Could not request results from Google Speech Recognition service")
+                engine.say("I couldn't request results")
+                engine.runAndWait()
+            except sr.UnknownValueError:
+                print("Could not understand the audio")
+                engine.say("I couldn't understand the audio")
+                engine.runAndWait()
+finally:
+    audio_stream.stop_stream()
+    audio_stream.close()
+    porcupine.delete()
+    pa.terminate()
